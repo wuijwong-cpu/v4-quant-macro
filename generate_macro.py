@@ -1,100 +1,263 @@
-import json
-import os
-import requests
-import yfinance as yf
-import pandas as pd
-from ta.trend import ADXIndicator
+/**
+ * INTOO V4-Quantamental Terminal 后端中枢 
+ * (已更新：支持战役追踪器 TRACKER_ALL 分流版 + V4物理宏观矩阵)
+ */
 
-# 定义 8 大宏观重力场指数
-INDEX_MAP = {
-    "NDX": "^NDX", 
-    "SPX": "^GSPC", 
-    "DJI": "^DJI",
-    "HSI": "^HSI", 
-    "HSTECH": "3067.HK", # 恒生科技 ETF，数据源更稳定
-    "N225": "^N225", 
-    "SHCOMP": "000001.SS", 
-    "SZCOMP": "399001.SZ"
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization", 
+};
+
+const FETCH_HEADERS = {
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+  "Accept": "application/json"
+};
+
+function createJsonResponse(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { "Content-Type": "application/json", ...CORS_HEADERS }
+  });
 }
 
-def generate_macro_data():
-    result = []
-    print(">>> 启动 V4 宏观重力场计算引擎 (Cloudflare KV 直连版)...")
-    
-    for v4_id, yf_symbol in INDEX_MAP.items():
-        try:
-            # 1. 抓取过去 6 个月的日线数据
-            df = yf.download(yf_symbol, period="6mo", progress=False)
-            if df.empty: 
-                print(f"[{v4_id}] 警告：未抓取到数据")
-                continue
-                
-            # 清洗雅虎金融最新版的多层表头
-            if isinstance(df.columns, pd.MultiIndex): 
-                df.columns = df.columns.droplevel(1)
-            
-            # 2. 注入量化计算公式 (MA 阵列与 ADX)
-            df['MA20'] = df['Close'].rolling(20).mean()
-            df['MA50'] = df['Close'].rolling(50).mean()
-            df['ADX_14'] = ADXIndicator(high=df['High'], low=df['Low'], close=df['Close'], window=14).adx()
-            
-            # 3. 严格执行 V4 纪律：只提取昨天 (T-1) 的快照定格数据
-            latest = df.iloc[-2] if len(df) > 1 else df.iloc[-1]
-            
-            adx_val = latest['ADX_14']
-            close_price = latest['Close']
-            ma20 = latest['MA20']
-            ma50 = latest['MA50']
-            
-            # 4. 物理状态判定逻辑
-            if close_price > ma20 and ma20 > ma50: 
-                regime = "BULL"
-            elif close_price < ma20 and ma20 < ma50: 
-                regime = "BEAR"
-            else: 
-                regime = "CHOPPY"
-                
-            result.append({
-                "id": v4_id, 
-                "adxVal": round(adx_val, 1) if not pd.isna(adx_val) else 0.0, 
-                "regime": regime
-            })
-            print(f"[{v4_id}] 计算成功: 状态={regime}, ADX={round(adx_val, 1)}")
-            
-        except Exception as e:
-            print(f"[{v4_id}] 引擎计算失败: {e}")
+export default {
+  async scheduled(event, env, ctx) {
+    console.log("[SYSTEM] 触发定时宏观引力场扫描...");
+    ctx.waitUntil(this.executeMacroScan(env));
+  },
 
-    # 5. 组装最终的 JSON 数据弹药
-    output_data = {"status": "success", "data": result}
-    json_str = json.dumps(output_data, ensure_ascii=False)
-    
-    # ================= KV 发射中心 =================
-    # 从 GitHub 的安全保险箱 (Secrets) 中读取 Cloudflare 密钥
-    account_id = os.environ.get("CF_ACCOUNT_ID")
-    namespace_id = os.environ.get("CF_NAMESPACE_ID")
-    api_token = os.environ.get("CF_API_TOKEN")
-    
-    # 安全拦截：如果没有配置密钥，直接阻断并报警
-    if not all([account_id, namespace_id, api_token]):
-        print("🚨 致命错误：系统未能读取到 Cloudflare API 密钥！")
-        print("请确保已在 GitHub 仓库的 Settings -> Secrets and variables 中配置了 CF_ACCOUNT_ID, CF_NAMESPACE_ID, CF_API_TOKEN。")
-        return
+  async fetch(request, env) {
+    const url = new URL(request.url);
 
-    # 构建 Cloudflare KV 的写入接口 URL (写入键值为 'v4_macro_daily')
-    url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/storage/kv/namespaces/{namespace_id}/values/v4_macro_daily"
-    headers = {
-        "Authorization": f"Bearer {api_token}",
-        "Content-Type": "application/json"
+    if (request.method === "OPTIONS") {
+      return new Response(null, { headers: CORS_HEADERS });
     }
-    
-    # 发射 PUT 请求，用最新数据覆盖旧数据
-    print(">>> 正在向 Cloudflare KV 数据库发射数据...")
-    response = requests.put(url, headers=headers, data=json_str.encode('utf-8'))
-    
-    if response.status_code == 200:
-        print("🚀 弹药入库完毕！成功将宏观数据写入边缘节点。")
-    else:
-        print(f"🚨 写入 KV 失败，请检查密钥权限。错误信息: {response.text}")
 
-if __name__ == "__main__":
-    generate_macro_data()
+    try {
+      // 路由 A: 宏观扫描数据 (从 RADAR_KV 读取)
+      if (request.method === "GET" && url.pathname === "/api/macro") {
+        const cachedData = await env.RADAR_KV.get("LATEST_MACRO", "json");
+        return cachedData 
+          ? createJsonResponse(cachedData) 
+          : createJsonResponse({ status: "no_data" });
+      }
+
+      // 路由 B: 强制刷新宏观
+      if (request.method === "POST" && url.pathname === "/api/scan") {
+        const cachedData = await env.RADAR_KV.get("LATEST_MACRO", "json");
+        if (cachedData && cachedData.timestamp) {
+          const timeSinceLastScan = Date.now() - cachedData.timestamp;
+          if (timeSinceLastScan < 10000) {
+            return createJsonResponse({ ...cachedData, _notice: "[防御] 冷却期内" });
+          }
+        }
+        const scanResult = await this.executeMacroScan(env);
+        return createJsonResponse(scanResult);
+      }
+
+      // 路由 C: 获取 V4 股票池 (从 ITOST_KV 读取)
+      if (request.method === "GET" && url.pathname === "/api/pool") {
+        const poolData = await env.ITOST_KV.get("V4_STOCK_POOL"); 
+        if (!poolData) {
+            return createJsonResponse({ error: { message: "股票池暂无数据" } }, 404);
+        }
+        return new Response(poolData, { status: 200, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } });
+      }
+
+      // 路由 D: 接收 Python 推送雷达数据 (支持 TRACKER 双轨同步)
+      if (request.method === "POST" && url.pathname === "/api/update_radar") {
+        const authHeader = request.headers.get("Authorization");
+        const EXPECTED_TOKEN = "INTOO_V4_SECURE_TOKEN_19881992"; 
+        
+        if (authHeader !== `Bearer ${EXPECTED_TOKEN}`) {
+            return createJsonResponse({ error: { message: "Unauthorized" } }, 401);
+        }
+
+        const payload = await request.json();
+        if (!payload || !payload.radar_data) {
+             return createJsonResponse({ error: { message: "Bad Request" } }, 400);
+        }
+
+        const dateObj = payload.timestamp ? new Date(payload.timestamp) : new Date();
+        const hkTime = new Date(dateObj.getTime() + 8 * 60 * 60 * 1000);
+        const dateString = hkTime.toISOString().split('T')[0];
+        const archiveKey = `RADAR_${dateString}`;
+
+        // 1. 存储今日雷达快照
+        await env.RADAR_KV.put(archiveKey, JSON.stringify(payload));
+        await env.RADAR_KV.put("RADAR_LATEST", JSON.stringify(payload));
+
+        // 2. 存储全量战役追踪账本 (新逻辑：如果 Payload 包含追踪数据则写入)
+        if (payload.tracker_data) {
+          const trackerData = {
+            timestamp: payload.timestamp,
+            tracker_data: payload.tracker_data
+          };
+          await env.RADAR_KV.put("TRACKER_ALL", JSON.stringify(trackerData));
+        }
+
+        return createJsonResponse({ 
+            success: true, 
+            message: `数据已双轨同步 (${archiveKey} & TRACKER_ALL)`,
+            timestamp: payload.timestamp
+        });
+      }
+
+      // 路由 E: 前端拉取战术雷达数据 (支持 ?type=tracker 分流)
+      if (request.method === "GET" && url.pathname === "/api/radar") {
+        const type = url.searchParams.get("type");
+        const targetDate = url.searchParams.get("date");
+        
+        let targetKey = "RADAR_LATEST"; // 默认 Key
+        
+        if (type === "tracker") {
+          targetKey = "TRACKER_ALL";    // 获取追踪账本
+        } else if (targetDate) {
+          targetKey = `RADAR_${targetDate}`; // 获取历史某日雷达
+        }
+
+        const radarData = await env.RADAR_KV.get(targetKey); 
+        
+        if (!radarData) {
+            return createJsonResponse({ 
+              error: { message: `未找到 ${targetKey} 的存档数据` },
+              radar_data: [],
+              tracker_data: [] 
+            }, 404);
+        }
+        return new Response(radarData, { status: 200, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } });
+      }
+
+      // 路由 F: 接收 Python 推送财报日历 (存入 CALENDAR_KV)
+      if (request.method === "POST" && url.pathname === "/api/update_calendar") {
+        const authHeader = request.headers.get("Authorization");
+        const EXPECTED_TOKEN = "INTOO_V4_SECURE_TOKEN_19881992"; 
+        
+        if (authHeader !== `Bearer ${EXPECTED_TOKEN}`) {
+            return createJsonResponse({ error: { message: "Unauthorized" } }, 401);
+        }
+
+        const payload = await request.json();
+        if (!payload) return createJsonResponse({ error: { message: "Bad Request" } }, 400);
+
+        await env.CALENDAR_KV.put("LATEST_CALENDAR", JSON.stringify(payload));
+        return createJsonResponse({ success: true, message: "日历更新成功" });
+      }
+
+      // 路由 G: 前端拉取事件日历 (从 CALENDAR_KV 读取)
+      if (request.method === "GET" && url.pathname === "/api/calendar") {
+        const calendarData = await env.CALENDAR_KV.get("LATEST_CALENDAR"); 
+        if (!calendarData) {
+            return createJsonResponse({ status: "no_data", message: "日历暂无数据" });
+        }
+        return new Response(calendarData, { status: 200, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } });
+      }
+
+      // =====================================================================
+      // 🚀 新增模块：强弱相关数据库 (使用 env.RS_KV 变量) 的存取接口
+      // =====================================================================
+      
+      // 路由 H: 接收 Python 推送的最新动能矩阵
+      if (request.method === "POST" && url.pathname === "/api/update_rs") {
+        const authHeader = request.headers.get("Authorization");
+        const EXPECTED_TOKEN = "INTOO_V4_SECURE_TOKEN_19881992"; 
+        if (authHeader !== `Bearer ${EXPECTED_TOKEN}`) return createJsonResponse({ error: { message: "Unauthorized" } }, 401);
+        
+        const payload = await request.json();
+        await env.RS_KV.put("LATEST_RS_MATRIX", JSON.stringify(payload));
+        return createJsonResponse({ success: true, message: "RS矩阵数据已成功写入 RS_KV" });
+      }
+
+      // 路由 I: 前端拉取动能矩阵
+      if (request.method === "GET" && url.pathname === "/api/rs_matrix") {
+        const rsData = await env.RS_KV.get("LATEST_RS_MATRIX");
+        if (!rsData) return createJsonResponse({ status: "no_data", message: "RS矩阵暂无数据" });
+        return new Response(rsData, { status: 200, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } });
+      }
+      // =====================================================================
+
+      // =====================================================================
+      // 🚀 新增模块：V4 物理宏观量化矩阵 (M模块 8宫格)
+      // =====================================================================
+      
+      // 路由 K: 接收 GitHub Python 推送的最新物理宏观矩阵
+      if (request.method === "POST" && url.pathname === "/api/update_macro_matrix") {
+        const authHeader = request.headers.get("Authorization");
+        const EXPECTED_TOKEN = "INTOO_V4_SECURE_TOKEN_19881992"; 
+        if (authHeader !== `Bearer ${EXPECTED_TOKEN}`) return createJsonResponse({ error: { message: "Unauthorized" } }, 401);
+        
+        const payload = await request.json();
+        await env.RADAR_KV.put("V4_MACRO_MATRIX", JSON.stringify(payload));
+        return createJsonResponse({ success: true, message: "物理宏观矩阵已成功写入 RADAR_KV" });
+      }
+
+      // 路由 L: 前端 8宫格面板 拉取物理宏观矩阵
+      if (request.method === "GET" && url.pathname === "/api/macro_matrix") {
+        const matrixData = await env.RADAR_KV.get("V4_MACRO_MATRIX");
+        if (!matrixData) return createJsonResponse({ status: "no_data", message: "物理矩阵暂无数据" });
+        return new Response(matrixData, { status: 200, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } });
+      }
+      // =====================================================================
+
+      // 路由 J: Gemini AI 审计
+      if (request.method === "POST" && (url.pathname === "/" || url.pathname === "")) {
+        const MODEL = env.GEMINI_MODEL_VERSION || "gemini-2.5-flash";
+        const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${env.GEMINI_API_KEY}`;
+        
+        const requestBody = await request.text();
+        const geminiResponse = await fetch(GEMINI_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: requestBody });
+        
+        const data = await geminiResponse.text();
+        return new Response(data, { headers: { "Content-Type": "application/json", ...CORS_HEADERS }});
+      }
+
+      return createJsonResponse({ error: { message: "越权访问被拒绝" } }, 404);
+
+    } catch (error) {
+      return createJsonResponse({ error: { message: error.message } }, 500);
+    }
+  },
+
+  async executeMacroScan(env) {
+    const MODEL = env.GEMINI_MODEL_VERSION || "gemini-2.5-flash";
+    const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${env.GEMINI_API_KEY}`;
+    const currentTimestamp = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Hong_Kong', hour12: false });
+
+    let hardDataStr = "[数据暂缺]";
+    try {
+      const [vixRes, tnxRes, dxyRes, hsiRes] = await Promise.all([
+        fetch('https://query1.finance.yahoo.com/v8/finance/chart/^VIX?range=1d&interval=1m', { headers: FETCH_HEADERS }),
+        fetch('https://query1.finance.yahoo.com/v8/finance/chart/^TNX?range=1d&interval=1m', { headers: FETCH_HEADERS }),
+        fetch('https://query1.finance.yahoo.com/v8/finance/chart/DX-Y.NYB?range=1d&interval=1m', { headers: FETCH_HEADERS }),
+        fetch('https://query1.finance.yahoo.com/v8/finance/chart/^HSI?range=1d&interval=1m', { headers: FETCH_HEADERS })
+      ]);
+      const vixData = await vixRes.json(); const tnxData = await tnxRes.json(); const dxyData = await dxyRes.json(); const hsiData = await hsiRes.json();
+      const vixVal = vixData?.chart?.result?.[0]?.meta?.regularMarketPrice || "数据暂缺";
+      const tnxVal = tnxData?.chart?.result?.[0]?.meta?.regularMarketPrice || "数据暂缺";
+      const dxyVal = dxyData?.chart?.result?.[0]?.meta?.regularMarketPrice || "数据暂缺";
+      const hsiVal = hsiData?.chart?.result?.[0]?.meta?.regularMarketPrice || "数据暂缺";
+      hardDataStr = `- 实时 VIX: ${vixVal}\n- 美债: ${tnxVal}\n- 美元: ${dxyVal}\n- 恒指: ${hsiVal}`;
+    } catch (e) {}
+
+    const payload = {
+      contents: [{ parts: [{ text: `【V4_MACRO_SCAN】\n时间: ${currentTimestamp}\n${hardDataStr}\n执行 M 模块盘前扫描...` }] }],
+      systemInstruction: { parts: [{ text: `你是 INTOO RESEARCH 的交易预审批助手。基于【V4-Quantamental 体系】对昨日今日的中日美港四大市场的宏观情况进行联网实时查询和归纳总结，输出当日的市场宏观研判和建议，包括流动性与基本面穿透、核心状态、T模块多周期结构、V4体系执行定调。格式要求：
+1. 必须在开头显式注明输出时间，严格等同于物理授时。
+2. 必须使用标准且紧凑的 Markdown 表格呈现四大市场状态及建议。
+3. 【强约束】表格的表头与内容之间、各数据行之间，绝对禁止包含任何空行或冗余换行符（不可出现连续的 \n\n），确保前端渲染紧凑对齐。
+4. 语气专业，客观冷静，直接给出核心内容。数据引用必须绝对精确。` }] },
+      generationConfig: { temperature: 0.05, topP: 0.8 },
+      tools: [{ googleSearch: {} }] 
+    };
+
+    const response = await fetch(GEMINI_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    const data = await response.json();
+    if (data.error) throw new Error(data.error.message);
+    const resultText = data.candidates[0].content.parts[0].text;
+    
+    const kvData = { timestamp: Date.now(), content: resultText, status: "success" };
+    await env.RADAR_KV.put("LATEST_MACRO", JSON.stringify(kvData));
+    return kvData;
+  }
+};
