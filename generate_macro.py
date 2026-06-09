@@ -2,6 +2,7 @@ import json
 import requests
 import yfinance as yf
 import pandas as pd
+import time  # 👈 新增：引入时间模块，用于生成物理时间戳
 from ta.trend import ADXIndicator
 
 # V4 宏观重力场 8 大指数映射
@@ -64,6 +65,8 @@ def generate_macro_data():
     # -------------------------------------------------------------
     existing_breadth = {}
     existing_macro_base = {}
+    existing_ts_breadth = None  # 👈 新增：初始化本地广度时间戳变量，防止报错
+    
     try:
         print("⏳ 正在拉取云端 KV 快照，防止彭博数据被覆盖...")
         resp = requests.get(READ_API_URL, timeout=10)
@@ -72,6 +75,7 @@ def generate_macro_data():
             # 安全提取现有的彭博广度和宏观天色数据
             existing_breadth = current_kv.get("breadth", {})
             existing_macro_base = current_kv.get("macro_base", {})
+            existing_ts_breadth = current_kv.get("ts_breadth", None)  # 👈 新增：安全提取云端现有的本地彭博时间戳
             print("✅ 云端历史数据提取成功，准备融合拼装。")
     except Exception as e:
         print(f"⚠️ 云端快照拉取失败，将使用空字典兜底: {e}")
@@ -79,10 +83,14 @@ def generate_macro_data():
     # -------------------------------------------------------------
     # 3. 穿透层：将 GitHub 计算的 ADX 与云端现有的彭博数据合并上传
     # -------------------------------------------------------------
+    current_ts = int(time.time() * 1000)  # 👈 新增：生成本次 GitHub 运行的 13 位毫秒级时间戳
+
     output_data = {
         "status": "success", 
-        "data": result,                 # GitHub 算出来的新 ADX
-        "breadth": existing_breadth,    # 继承原本由本地电脑上传的彭博广度
+        "ts_regime": current_ts,          # 👈 新增：注入本次 GitHub 更新的动能(ADX)时间
+        "ts_breadth": existing_ts_breadth,# 👈 新增：原封不动地继承保护本地彭博的广度时间
+        "data": result,                   # GitHub 算出来的新 ADX
+        "breadth": existing_breadth,      # 继承原本由本地电脑上传的彭博广度
         "macro_base": existing_macro_base # 继承原有的基础天色
     }
     
