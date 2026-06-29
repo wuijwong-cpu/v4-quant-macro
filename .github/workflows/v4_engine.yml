@@ -1,28 +1,34 @@
-name: V4 Quant Engine - Daily Compute
+name: INTOO V4 Daily Radar Auto-Scan
 
 on:
   schedule:
-    # 物理授时：配置多时段自动触发（已转换为 UTC 时间）
-    - cron: '0 2,14,22 * * *'  # 触发北京时间：10:00, 22:00, 次日06:00
-    - cron: '30 5,16 * * *'    # 触发北京时间：13:30, 次日00:30
-    - cron: '50 8 * * *'       # 触发北京时间：16:50
-  workflow_dispatch:
+    # 建议设置在每天清晨 (如 HKT 早6点 / UTC 晚22点)，此时美股已收盘，能生成最完整的日度切片
+    - cron: '0 22 * * 1-5'
+  workflow_dispatch: # 允许手动点击运行
 
 jobs:
-  run-quant-engine:
+  build:
     runs-on: ubuntu-latest
     steps:
-      - name: 检出代码
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v3
 
-      - name: 配置 Python 3.11 环境
+      - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
-          cache: 'pip'
+          python-version: '3.10'
 
-      - name: 安装量化模块
-        run: pip install -r requirements.txt
+      - name: Install dependencies
+        run: |
+          pip install yfinance pandas ta requests
 
-      - name: 执行 M 模块矩阵测算与数据穿透
-        run: python generate_macro.py
+      - name: Run V4 Macro Tracker
+        run: python your_script_name.py # 替换为你的 Python 文件名
+
+      # ======================================================
+      # 👈 核心新增：将生成的 CSV 自动提交回当前 GitHub 仓库
+      # ======================================================
+      - name: Commit and Push Historical Data
+        uses: stefanzweifel/git-auto-commit-action@v4
+        with:
+          commit_message: "V4 Auto-Sync: Update daily macro history 🤖"
+          file_pattern: "v4_macro_history_cloud.csv" # 只提交这个文件，防止污染
