@@ -22,7 +22,7 @@ jobs:
           pip install yfinance pandas ta requests
 
       - name: Run V4 Macro Tracker
-        run: python your_script_name.py # 替换为你的 Python 文件名
+        run: generate_macro.py # 替换为你的 Python 文件名
 
       # ======================================================
       # 👈 核心新增：将生成的 CSV 自动提交回当前 GitHub 仓库
