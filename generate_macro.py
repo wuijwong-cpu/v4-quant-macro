@@ -19,7 +19,8 @@ INDEX_MAP = {
 
 READ_API_URL = "https://api.intootech.com/api/macro_matrix"
 WRITE_API_URL = "https://api.intootech.com/api/update_macro_matrix"
-SECRET_TOKEN = "INTOO_V4_SECURE_TOKEN_19881992"
+SECRET_TOKEN = os.environ.get("SECRET_TOKEN", "").strip()
+# 🔐 不再写死在源码里：由 GitHub Actions Secret 自动注入
 GITHUB_HISTORY_FILE = "v4_macro_history_cloud.csv" # 👈 云端持久化文件命名
 
 # =====================================================================
@@ -138,6 +139,8 @@ def generate_macro_data():
         "macro_base": existing_macro_base 
     }
     
+    if not SECRET_TOKEN:
+        raise SystemExit("❌ 缺少 SECRET_TOKEN 环境变量（应由 GitHub Actions Secret 自动注入）")
     headers = {"Authorization": f"Bearer {SECRET_TOKEN}", "Content-Type": "application/json"}
     response = requests.post(WRITE_API_URL, headers=headers, json=output_data)
     
